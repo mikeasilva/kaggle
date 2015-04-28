@@ -1,0 +1,275 @@
+---
+title: "Kaggle Titanic Survivors Challenge"
+author: "Mike Silva"
+date: "Started Friday, April 24, 2015"
+output: html_document
+---
+
+## Introduction 
+
+In this Kaggle competition the goal is to predict if a passenger survived on the Titanic.  This competition ran from Friday 28 September 2012 to Thursday 31 December 2015.  I used this challenge to introduce my children to field of data science. This document outlines the process we took to develop our prediction model.
+
+## Initial Thoughts on the Approach to Take
+
+This data is not new to the author.  It is, however, new to my children.  I would like to create a model that is based on the attributes of the passengers.  I know there is information about family members on board and it might be interesting to try to discover these relationships.  However I want to begin with the simplest of models.
+
+## About the Data
+
+Kaggle provided training and test data sets and the following documentation about the variables:  
+
+```{r, results='hide'}
+"
+survival        Survival
+                (0 = No; 1 = Yes)
+pclass          Passenger Class
+                (1 = 1st; 2 = 2nd; 3 = 3rd)
+name            Name
+sex             Sex
+age             Age
+sibsp           Number of Siblings/Spouses Aboard
+parch           Number of Parents/Children Aboard
+ticket          Ticket Number
+fare            Passenger Fare
+cabin           Cabin
+embarked        Port of Embarkation
+                (C = Cherbourg; Q = Queenstown; S = Southampton)
+
+SPECIAL NOTES:
+Pclass is a proxy for socio-economic status (SES)
+ 1st ~ Upper; 2nd ~ Middle; 3rd ~ Lower
+
+Age is in Years; Fractional if Age less than One (1)
+ If the Age is Estimated, it is in the form xx.5
+
+With respect to the family relation variables (i.e. sibsp and parch)
+some relations were ignored.  The following are the definitions used
+for sibsp and parch.
+
+Sibling:  Brother, Sister, Stepbrother, or Stepsister of Passenger Aboard Titanic
+Spouse:   Husband or Wife of Passenger Aboard Titanic (Mistresses and Fiances Ignored)
+Parent:   Mother or Father of Passenger Aboard Titanic
+Child:    Son, Daughter, Stepson, or Stepdaughter of Passenger Aboard Titanic
+
+Other family relatives excluded from this study include cousins,
+nephews/nieces, aunts/uncles, and in-laws.  Some children travelled
+only with a nanny, therefore parch=0 for them.  As well, some
+travelled with very close friends or neighbors in a village, however,
+the definitions do not support such relations.
+"
+```
+
+I posted the data for this competition to my GitHub account.  This was done to make these results repeatable.  We began by loading the training and test data:
+
+```{r}
+training <- read.csv('train.csv', na.strings = c('NA',''))
+test <- read.csv('test.csv', na.strings = c('NA',''))
+```
+
+The training data set has `r nrow(training)` observations and `r ncol(training)` features.  The test data set has `r nrow(test)` observations and `r ncol(test)` features. The following table presents the first 6 records of the training data set:
+  
+```{r, message=FALSE}
+library(pander)
+pander(head(training), style='rmarkdown')
+```
+
+We looked for missing data using the Amelia package:
+
+```{r, message=FALSE}
+library(Amelia)
+missmap(training, main='Titanic Training Dataset', legend=FALSE)
+```
+
+We note that the cabin number is missing a lot of data.  This is not a problem as we did not plan to use this to make our inferences.
+
+## Exploratory Analysis
+
+We began to look at the relationship between if the person survived and all the features in the training data set to get a sense of the patterns in the data.  
+
+### Passenger Class
+ 
+```{r, message=FALSE}
+library(vcd)
+mosaicplot(training$Pclass ~ training$Survived, main='Titanic Survivors by Passenger Class', shade=FALSE, color=TRUE, xlab='Passenger Class', ylab='Survived (0=no, 1=yes)')
+```
+
+### Name
+
+The names in the data set follow the following pattern: *Surname, Title. Given Names*.  I would be interesting to break these apart and see if a title increase the odds of a spot on a life boat.
+
+First we needed a function that could split the names into their 3 parts.
+
+```{r}
+split.titanic.names <- function(name){
+  split.name <- strsplit(as.character(name), ',')
+  surname <- split.name[[1]][1]
+  split.name <- strsplit(split.name[[1]][2],'[.]')
+  title <- sub("^\\s+", "", split.name[[1]][1]) # trims leading whitespace
+  given.names <- sub("^\\s+", "", split.name[[1]][2])
+  return(c(surname, title, given.names))
+}
+```
+
+Then we need to use the function to add the variables to the training data:
+
+```{r table1, message=FALSE, warnings=FALSE, results='asis'}
+library(dplyr)
+name.list <- lapply(training$Name, split.titanic.names)
+training <- data.frame(matrix(unlist(name.list), nrow=nrow(training), byrow=TRUE)) %>%
+  cbind(training, .) %>%
+  rename(Surname=X1) %>%
+  rename(Title=X2) %>%
+  rename(Given.Names=X3)
+pander(table(training$Title, training$Survived), style = 'rmarkdown')
+```
+
+When looking over this table it becomes clear that the titles that increased your odds are those that apply to females and higher social class.  The title might be helpful however the sex and passenger class might be a better variables for the model.
+
+### Sex
+
+Did the passenge's sex change the odds of survival?  Well `r nrow(training[training$Sex=='female',])` of the `r nrow(training)` (or `r round((nrow(training[training$Sex=='female',])/nrow(training))*100,0)`%) passengers were female, however they make up `r round((nrow(training[training$Sex=='female' & training$Survived==1,])/nrow(training[training$Sex=='female',]))*100,0)`% of the survivors.
+
+```{r, message=FALSE}
+mosaicplot(training$Sex ~ training$Survived, main='Titanic Survivors by Sex', shade=FALSE, color=TRUE, xlab='Sex', ylab='Survived (0=no, 1=yes)')
+```
+
+### Age
+
+Were children more likely to survive than adults?  We observe the mean age of the survivors is `r round(mean(training[training$Survived==1,]$Age, na.rm=TRUE),0)` and the mean age of non-survivors is `r round(mean(training[training$Survived==0,]$Age, na.rm=TRUE),0)`.  If the crew observed "Women and Children First" one would expect that. This begs the question when was a passenger no longer considered a child.
+
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+training %>%
+  mutate(Survived = ifelse(Survived==0,'No','Yes')) %>%
+  mutate(Survived = as.factor(Survived)) %>%
+  ggplot(., aes(x=Age, fill=Survived)) + 
+  geom_density(alpha=0.3) + 
+  ggtitle('Titanic Survivors by Age') + 
+  geom_vline(aes(xintercept=18), linetype="dashed", size=1) # Child is younger than 18?
+```
+
+It is also important to note that not all the passengers are included in the above image.  There are `r nrow(training[is.na(training$Age),])` passengers in the training data set that don't have age data.  We will probably have to create a model that estimates the age of the passengers.
+
+#### Digression: Women and Children First?
+
+Wanting to observe if "women and children first" was observed, we examined the following scatterplot:
+
+```{r, warning=FALSE}
+training %>%
+  mutate(Survived = ifelse(Survived==0,'No','Yes')) %>%
+  mutate(Survived = as.factor(Survived)) %>%
+  ggplot(., aes(x=Age, y=Sex, color=Survived)) + 
+  geom_point(position='jitter') + 
+  ggtitle('Titanic Survivors: Women and Children First?')
+```
+
+There seems to be evidence of if though it was not strictly followed.
+
+#### Relationship between Title and Age
+
+Since there are `r nrow(training[is.na(training$Age),])` passengers in the training set missing their age we will need to fill it in.  Could the title be useful way of getting an age?  First let's see what the titles are for the passengers without an age.
+
+```{r}
+training %>%
+  filter(ifelse(is.na(Age),0,1)==0) %>%
+  group_by(Title) %>%
+  summarise(Count=n()) %>%
+  pander(., style='rmarkdown')
+```
+
+Now let's see what the average age by title:
+
+```{r}
+training %>%
+  filter(ifelse(is.na(Age),0,1)==1) %>%
+  group_by(Title) %>%
+  summarise(mean(Age)) %>%
+  pander(., style='rmarkdown')
+```
+
+### Number of Family Members Aboard
+
+Perhaps a passenger was more likely to get on a lifeboat if a member of their family was let on.  There are two variables that address this dimension.
+
+#### Siblings or Spouse Aboard
+
+The average number of siblings and or spouses aboard of survivors is `r round(mean(training[training$Survived==1,]$SibSp),2)` and `r round(mean(training[training$Survived==0,]$SibSp),2)` for non-survivors.
+
+```{r}
+training %>%
+  mutate(Survived = ifelse(Survived==0,'No','Yes')) %>%
+  mutate(Survived = as.factor(Survived)) %>%
+  select(SibSp, Survived) %>%
+  group_by(SibSp, Survived) %>%
+  summarise(Count=n()) %>%
+  ggplot(., aes(x=SibSp, y=Count, fill=Survived)) + 
+  geom_bar(stat='identity', position=position_dodge()) + 
+  ggtitle('Titanic Survivors by Presence of Family Aboard') + 
+  xlab('Number of Sibilings and/or Spouse Aboard')
+```
+
+#### Parents or Children Aboard
+
+The average number of parents or children aboard for the survivors is `r round(mean(training[training$Survived==1,]$Parch),2)` and `r round(mean(training[training$Survived==0,]$Parch),2)` for those who perished.
+
+```{r}
+training %>%
+  mutate(Survived = ifelse(Survived==0,'No','Yes')) %>%
+  mutate(Survived = as.factor(Survived)) %>%
+  select(Parch, Survived) %>%
+  group_by(Parch, Survived) %>%
+  summarise(Count=n()) %>%
+  ggplot(., aes(x=Parch, y=Count, fill=Survived)) + 
+  geom_bar(stat='identity', position=position_dodge()) + 
+  ggtitle('Titanic Survivors by Presence of Family Aboard') + 
+  xlab('Number of Parents and/or Children Aboard')
+```
+
+### Ticket Number
+
+This variable was not examined because the ticket number is an attribute of the ticket not the passenger.  We planned on basing our predictions on passenger attributes.
+
+### Passenger Fare
+
+The fare paid might be useful as a proxy for the social class.  The average fare for those who survived the Titanic was `r round(mean(training[training$Survived==1,]$Fare),2)`.  It was `r round(mean(training[training$Survived==0,]$Fare),2)` for the non-survivors.
+
+```{r}
+training %>%
+  mutate(Survived=ifelse(Survived==0,'No','Yes')) %>%
+  mutate(Survived=as.factor(Survived)) %>%
+  ggplot(., aes(x=Survived, y=Fare, fill=Survived)) + 
+  geom_boxplot() + 
+  ggtitle('Titanic Survivors and Fare Paid')
+```
+
+The outlier who paid the highest fare of course survived.  We observe there were quite a few who paid a relatively high fare that didn't survive.  
+
+#### Passenger Fare and Social Class
+
+One would expect the fare paid to be a function of the person's social class.  So we decided to observe the relationship between the social class, ticket fare and if the passenger survived:
+
+```{r}
+training %>%
+  mutate(Pclass = as.factor(Pclass)) %>%
+  mutate(Survived = ifelse(Survived==0,'No','Yes')) %>% 
+  mutate(Survived = as.factor(Survived)) %>%
+  ggplot(., aes(x=Pclass, y=Fare, color=Survived)) + 
+  geom_point(position='jitter') + 
+  ggtitle('Titanic Survivors by Social Class and Fare') +
+  xlab('Passenger Class')
+```
+
+It becomes clear that the passenger fare could be used to predict a passenger's social class.  The price paid did not guarentee a passenger a spot on a lifeboat.  The second and third class passengers who paid the most did not survive.  There were first class passengers who paid less that survived.
+
+#### Digression: Topic for Future Research
+
+This dataset is usually used to model if a passenger survived or parished.  It would be interesting to use it to build a model for the fare paid.  I could see using the class, age, and distance traveled (which would be derived from the point of embarkation) as predictors for the fare.
+
+## Feature Selection
+
+There is not enough data on the cabin number to make inferences so we dropped it from the training data set.
+
+```{r}
+training <- training %>%
+  select(-Cabin, -PassengerId)
+```
