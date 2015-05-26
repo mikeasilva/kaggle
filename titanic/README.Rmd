@@ -3,6 +3,7 @@ title: "Kaggle Titanic Survivors Challenge"
 author: "Mike Silva"
 date: "Started Friday, April 24, 2015"
 output: html_document
+  keep_md: true
 ---
 
 ## Introduction 
@@ -61,8 +62,8 @@ the definitions do not support such relations.
 I posted the data for this competition to my GitHub account.  This was done to make these results repeatable.  We began by loading the training and test data:
 
 ```{r}
-training <- read.csv('train.csv', na.strings = c('NA',''))
-test <- read.csv('test.csv', na.strings = c('NA',''))
+training <- read.csv('data/train.csv', na.strings = c('NA',''))
+test <- read.csv('data/test.csv', na.strings = c('NA',''))
 ```
 
 The training data set has `r nrow(training)` observations and `r ncol(training)` features.  The test data set has `r nrow(test)` observations and `r ncol(test)` features. The following table presents the first 6 records of the training data set:
@@ -177,13 +178,13 @@ training %>%
   pander(., style='rmarkdown')
 ```
 
-Now let's see what the average age by title:
+Now let's see what the median age by title:
 
 ```{r}
 training %>%
   filter(ifelse(is.na(Age),0,1)==1) %>%
   group_by(Title) %>%
-  summarise(mean(Age)) %>%
+  summarise(median(Age)) %>%
   pander(., style='rmarkdown')
 ```
 
@@ -272,4 +273,21 @@ There is not enough data on the cabin number to make inferences so we dropped it
 ```{r}
 training <- training %>%
   select(-Cabin, -PassengerId)
+```
+
+Next we need to fill in the holes for the age variable.  To do this we will use the median age by title
+
+```{r}
+median.age.by.title <- training %>%
+  filter(ifelse(is.na(Age),0,1)==1) %>%
+  group_by(Title) %>%
+  summarise(median(Age))
+
+get_median_age <- function(title, df=median.age.by.title){
+  message(title)
+  median_age <- df[df$Title == title,2]
+  if(!is.na(median_age))
+    median_age <- round(as.numeric(median_age),0)
+  return(median_age)
+}
 ```
